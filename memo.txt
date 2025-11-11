@@ -1,0 +1,23 @@
+
+맥
+python3 -m venv venv
+윈도우
+python -m venv venv
+
+
+가상환경 실행
+맥
+source venv/bin/activate
+윈도우
+venv\Scripts\activate
+
+가상환경 패키지 설치
+pip install -r requirements.txt
+
+fast api 설치
+pip install fastapi uvicorn transformers torch accelerate
+
+서버 실행
+uvicorn main:app --reload
+풀링 예제 실행
+python poolingEx.py
