@@ -6,6 +6,12 @@ import os
 import json
 import asyncio
 
+# ========== Mock 모드 설정 ==========
+# True: Mock 데이터 사용 (모델 없이 테스트)
+# False: 실제 action_model_2 사용
+USE_MOCK_MODEL = True  # ← 테스트 시 True, 실제 배포 시 False
+# ====================================
+
 app = FastAPI()
 
 app.add_middleware(
@@ -33,6 +39,10 @@ LAST_POLL_TIME = None
 # 브라우저 상태
 BROWSER_RUNNING = False
 BROWSER_COUNT = 0
+
+# Action 세션 상태 (one-action-at-a-time flow)
+ACTION_SESSION_ACTIVE = False
+ACTION_SESSION_REQUEST_ID = None
 
 # 로그인 요청 모델
 class LoginRequest(BaseModel):
@@ -167,9 +177,84 @@ async def prompt(request: PromptRequest):
 class StateData(BaseModel):
     data: dict
 
+class ActionFeedback(BaseModel):
+    request_id: str
+    action_result: dict
+
+@app.post("/action/feedback")
+async def action_feedback(request: ActionFeedback):
+    """
+    실행 웹이 action 실행 후 상태를 피드백하는 엔드포인트.
+    이 state를 기반으로 다음 action을 생성합니다.
+    """
+    global ACTION_SESSION_REQUEST_ID
+
+    print(f"[Feedback] Action 실행 결과 수신 (request_id: {request.request_id})")
+    print(f"[Feedback] 실행 결과: {request.action_result}")
+
+    # request_id 검증
+    if request.request_id != ACTION_SESSION_REQUEST_ID:
+        raise HTTPException(status_code=400, detail="Invalid request_id")
+
+    # observations 구성 (sidebar 상태 등)
+    observations = {
+        "current_url": request.action_result.get("current_url"),
+        "success": request.action_result.get("success"),
+        "error": request.action_result.get("error")
+    }
+
+    # 다음 action 생성
+    try:
+        import action_model_2
+
+        next_action_result = action_model_2.get_next_action(
+            observations=observations,
+            max_new_tokens=256
+        )
+
+        if "error" in next_action_result:
+            print(f"[Feedback] 세션 오류: {next_action_result['error']}")
+            raise HTTPException(status_code=400, detail=next_action_result["error"])
+
+        generated_action = next_action_result.get("generated_action", {})
+        status = generated_action.get("status")
+
+        print(f"[Feedback] 다음 액션 생성 완료 (status: {status})")
+
+        # state.json에 저장
+        state_data = {
+            "request_id": request.request_id,
+            "generated_action": generated_action
+        }
+
+        save_path = os.path.join(os.path.dirname(__file__), "state.json")
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(state_data, f, ensure_ascii=False, indent=2)
+
+        print(f"[Feedback] state.json 저장 완료")
+
+        # 마지막 액션이면 세션 종료
+        if status in ["finish", "completed"]:
+            global ACTION_SESSION_ACTIVE
+            ACTION_SESSION_ACTIVE = False
+            print(f"[Feedback] 액션 시퀀스 완료 - 세션 종료")
+
+        return {
+            "ok": True,
+            "message": "다음 액션 생성 완료",
+            "status": status
+        }
+
+    except Exception as e:
+        print(f"[Feedback] 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/state")
 async def save_state(request: StateData):
-    global PROMPT_TEXT
+    global PROMPT_TEXT, ACTION_SESSION_ACTIVE, ACTION_SESSION_REQUEST_ID
+    import uuid
 
     # state.json에 저장할 데이터 준비
     state_data_to_save = request.data.copy()
@@ -186,39 +271,125 @@ async def save_state(request: StateData):
         else:
             print(f"[State] 경고: UI 상태 없음")
 
-        # ========== 모델 통합 지점 ==========
-        # TODO: 나중에 여기서 모델을 호출하여 액션 생성
-        #
-        # 모델 입력:
-        #   - PROMPT_TEXT: 사용자 프롬프트 (예: "학적부 조회")
-        #   - request.data["ui_state"]: 현재 UI 상태 (sidebar, current_page 등)
-        #
-        # 모델 출력:
-        #   - generated_action: {
-        #       "type": "trajectory",
-        #       "actions_file": "trajectory_xxx.json",
-        #       "description": "액션 설명"
-        #     }
-        #
-        # 예시:
-        # from model import generate_action
-        # generated_action = generate_action(
-        #     prompt=PROMPT_TEXT,
-        #     ui_state=request.data.get("ui_state")
-        # )
-        # state_data_to_save["generated_action"] = generated_action
+        # ========== One-Action-at-a-Time 모드 ==========
+        try:
+            # Mock 모드 또는 실제 모델 선택
+            if USE_MOCK_MODEL:
+                print(f"[State] Mock 모델 사용 (테스트 모드)")
+                import mock_action_model as action_model_2
+            else:
+                print(f"[State] 실제 모델 사용")
+                import action_model_2
+
+            # 세션이 이미 활성화되어 있는지 확인
+            if ACTION_SESSION_ACTIVE and ACTION_SESSION_REQUEST_ID:
+                # 세션 진행 중 → 다음 액션 생성
+                print(f"[State] 세션 진행 중, 다음 액션 생성 (request_id: {ACTION_SESSION_REQUEST_ID})")
+
+                # observations 구성 (UI 상태에서 추출)
+                observations = None
+                if "ui_state" in request.data:
+                    ui_state = request.data["ui_state"]
+                    observations = {
+                        "current_url": ui_state.get("url"),
+                        "sidebar": ui_state.get("sidebar", [])
+                    }
+                    print(f"[State] Observations: {observations}")
+
+                # 다음 액션 생성
+                next_action_result = action_model_2.get_next_action(
+                    observations=observations,
+                    max_new_tokens=256
+                )
+
+                if "error" in next_action_result:
+                    raise Exception(next_action_result["error"])
+
+                generated_action = next_action_result.get("generated_action", {})
+                state_data_to_save["generated_action"] = generated_action
+                state_data_to_save["request_id"] = ACTION_SESSION_REQUEST_ID
+
+                status = generated_action.get("status")
+                current_step = generated_action.get("current_step", 1)
+                total_steps = generated_action.get("total_steps", 1)
+
+                print(f"[State] 다음 액션 생성 완료 (status: {status}, step: {current_step}/{total_steps})")
+
+            else:
+                # 새로운 세션 시작
+                print(f"[State] 새로운 액션 세션 초기화...")
+                init_result = action_model_2.init_action_session(
+                    prompt_text=PROMPT_TEXT,
+                    max_new_tokens=256,
+                    do_sample=False
+                )
+
+                print(f"[State] 세션 초기화 완료: {init_result['total_steps']} 단계")
+
+                # 세션 ID 생성
+                request_id = str(uuid.uuid4())
+                ACTION_SESSION_REQUEST_ID = request_id
+                ACTION_SESSION_ACTIVE = True
+
+                # 첫 번째 액션 생성
+                first_action_result = action_model_2.get_next_action(
+                    observations=None,  # 첫 액션은 observations 없음
+                    max_new_tokens=256
+                )
+
+                if "error" in first_action_result:
+                    raise Exception(first_action_result["error"])
+
+                generated_action = first_action_result.get("generated_action", {})
+                state_data_to_save["generated_action"] = generated_action
+                state_data_to_save["request_id"] = request_id
+
+                status = generated_action.get("status")
+                current_step = generated_action.get("current_step", 1)
+                total_steps = generated_action.get("total_steps", 1)
+
+                print(f"[State] 첫 액션 생성 완료 (status: {status}, step: {current_step}/{total_steps})")
+
+        except Exception as e:
+            print(f"[State] 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # 폴백: 기존 방식 (전체 액션 리스트)
+            print(f"[State] 폴백: 전체 액션 리스트 생성 모드")
+            try:
+                if USE_MOCK_MODEL:
+                    import mock_action_model as action_model_2
+                else:
+                    import action_model_2
+                model_result = action_model_2.run_action_from_prompt(
+                    prompt_text=PROMPT_TEXT,
+                    max_new_tokens=256,
+                    do_sample=False
+                )
+
+                if "generated_action" in model_result:
+                    generated_action = model_result["generated_action"]
+                    state_data_to_save["generated_action"] = generated_action
+                    print(f"[State] 폴백 액션 생성 완료")
+
+                    actions_file = generated_action.get("actions_file")
+                    if isinstance(actions_file, list):
+                        print(f"[State] 생성된 액션 개수: {len(actions_file)}개")
+                else:
+                    raise Exception("generated_action 없음")
+
+            except Exception as e2:
+                print(f"[State] 폴백도 실패: {e2}")
+                # 최종 폴백: 하드코딩된 trajectory
+                temp_action = {
+                    "type": "trajectory",
+                    "actions_file": "trajectory_student_check.json",
+                    "description": "학적부 열람 (최종 폴백)"
+                }
+                state_data_to_save["generated_action"] = temp_action
+                print(f"[State] 하드코딩 trajectory 사용")
         # ====================================
-
-        #  임시 액션 (현재는 모델 대신 수동 지정)
-        temp_action = {
-            "type": "trajectory",
-            "actions_file": "trajectory_student_check.json",  # 학적부 열람용
-            "description": "학적부 열람"
-        }
-
-        state_data_to_save["generated_action"] = temp_action
-        print(f"[임시] 액션 생성: {temp_action}")
-        print(f"[TODO] 모델 통합 필요 - Api.py:95-115 참고")
 
     #  state.json 저장
     save_path = os.path.join(os.path.dirname(__file__), "state.json")
@@ -284,6 +455,11 @@ async def command(browser_running: str = "false", browser_count: int = 0):
         # action task
         resp["type"] = "action"
 
+        # One-Action-at-a-Time 모드: 다음 액션 미리 생성
+        if ACTION_SESSION_ACTIVE:
+            print(f"[Command] One-Action-at-a-Time 세션 활성화 - 다음 액션 생성 예약")
+            # 실제 액션 생성은 /action 호출 후 이루어지므로 여기서는 플래그만 설정
+
     elif current_type == 4:
         # shutdown task
         resp["type"] = "shutdown"
@@ -315,23 +491,53 @@ def get_action():
 
 @app.get("/action")
 def get_action():
-    global TASK_TYPE, PROMPT_EVENT
+    global TASK_TYPE, PROMPT_EVENT, ACTION_SESSION_ACTIVE, ACTION_SESSION_REQUEST_ID
     state_path = os.path.join(os.path.dirname(__file__), "state.json")
     if not os.path.exists(state_path):
         raise HTTPException(status_code=404, detail="state.json 파일이 존재하지 않습니다.")
     with open(state_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # action 완료 → 다음 프롬프트 준비
-    TASK_TYPE = 0
-    PROMPT_EVENT.set()
+    # request_id 확인 (One-Action-at-a-Time 모드)
+    request_id = data.get("request_id")
+    generated_action = data.get("generated_action", {})
+    action = generated_action.get("action", {})
 
-    # 실행 완료 후 state.json 초기화 (중복 완료 방지)
-    try:
-        os.remove(state_path)
-        print("[Action] state.json 삭제 완료 (중복 완료 방지)")
-    except Exception as e:
-        print(f"[Action] state.json 삭제 실패: {e}")
+    # 마지막 액션 여부: action 내부의 status 필드 확인
+    action_status = action.get("status")
+    is_last_action = (action_status == "FINISH")
+
+    if request_id and ACTION_SESSION_ACTIVE:
+        # One-Action-at-a-Time 모드
+        print(f"[Action] One-Action-at-a-Time 모드")
+        if is_last_action:
+            print(f"[Action] 마지막 액션 감지 (action.status: FINISH)")
+
+        if is_last_action:
+            # 마지막 액션 → 세션 종료
+            print(f"[Action] 마지막 액션 전달, 세션 종료")
+            TASK_TYPE = 0
+            PROMPT_EVENT.set()
+            ACTION_SESSION_ACTIVE = False
+            ACTION_SESSION_REQUEST_ID = None
+        else:
+            # 중간 액션 → 다시 state 요청
+            print(f"[Action] 중간 액션 전달, TASK_TYPE=2로 변경 (state 요청)")
+            TASK_TYPE = 2  # 다음 폴링에서 "state" 반환하여 실행 웹이 UI 상태 전송
+            # PROMPT_TEXT는 유지 (세션 진행 중)
+
+    else:
+        # 기존 방식 (전체 액션 리스트)
+        print(f"[Action] 전체 액션 리스트 모드")
+        TASK_TYPE = 0
+        PROMPT_EVENT.set()
+
+        # 실행 완료 후 state.json 초기화 (중복 완료 방지)
+        try:
+            os.remove(state_path)
+            print("[Action] state.json 삭제 완료 (중복 완료 방지)")
+        except Exception as e:
+            print(f"[Action] state.json 삭제 실패: {e}")
 
     return JSONResponse(content=data)
 
@@ -547,4 +753,8 @@ async def execution_web_status():
     }
 
 
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
