@@ -82,24 +82,3 @@ def get_next_action(observations=None, **kwargs):
     _current_step_index += 1
 
     return result
-
-
-def run_action_from_prompt(prompt_text: str, **kwargs):
-    """
-    Mock: 전체 액션 리스트 반환 (폴백용)
-    """
-    print(f"[Mock] 전체 액션 리스트 생성 (폴백 모드)")
-
-    actions_file = [
-        {"action": {"name": "goto", "args": {"url": "https://ndrims.dongguk.edu/main/main.clx"}}},
-        {"action": {"name": "click", "args": {"selector": "role=treeitem[name='학적/확인서']"}}},
-        {"action": {"name": "click", "args": {"selector": "role=treeitem[name='학적부열람']"}}}
-    ]
-
-    return {
-        "generated_action": {
-            "type": "trajectory",
-            "actions_file": actions_file,
-            "description": "학적부 조회 (Mock 전체 리스트)"
-        }
-    }
