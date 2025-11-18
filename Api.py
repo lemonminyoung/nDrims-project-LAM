@@ -16,7 +16,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # 또는 ["http://localhost:5173"] 처럼 제한 가능
+    allow_origins=["*"],       
     allow_credentials=True,
     allow_methods=["*"],            # POST, GET, OPTIONS 등 모두 허용
     allow_headers=["*"],
@@ -129,14 +129,12 @@ async def prompt(request: PromptRequest):
     # /command가 프롬프트를 가져갈 때까지 대기 (타임아웃 포함)
     try:
         await asyncio.wait_for(PROMPT_EVENT.wait(), timeout=30.0)
-    except asyncio.TimeoutError:
-        # 타임아웃 시 상태 초기화
+    except asyncio.TimeoutError:# 타임아웃 시 상태 초기화
         PROMPT_TEXT = None
         PROMPT_EVENT.set()
         raise HTTPException(status_code=504, detail="action이 완료되지 않아 타임아웃되었습니다.")
 
-    # /command에서 프롬프트를 가져간 것이 확인된 후 성공 응답
-    return {
+    return {# /command에서 프롬프트를 가져간 것이 확인된 후 성공 응답
         "ok": True,
         "prompt_text": request.text,
         "message": "프롬프트가 command로 전달되었습니다."
@@ -149,32 +147,27 @@ class StateData(BaseModel):
 async def save_state(request: StateData):
     global PROMPT_TEXT
 
-    # state.json에 저장할 데이터 준비
-    state_data_to_save = request.data.copy()
+    
+    state_data_to_save = request.data.copy() # state.json에 저장할 데이터 준비
 
-    # 프롬프트가 있으면 액션 생성
-    if PROMPT_TEXT:
+    if PROMPT_TEXT: # 프롬프트가 있으면 액션 생성
         print(f"[State] 프롬프트 감지: {PROMPT_TEXT}")
         print(f"[State] 현재 UI 상태 수신됨")
 
-        # UI 상태 확인
-        has_ui_state = "ui_state" in request.data
+        has_ui_state = "ui_state" in request.data # UI 상태 확인
         if has_ui_state:
             print(f"[State] UI 상태 URL: {request.data['ui_state'].get('url', 'N/A')}")
         else:
             print(f"[State] 경고: UI 상태 없음")
 
-        # ========== 액션 생성 ==========
-        try:
-            # Mock 모드 또는 실제 모델 선택
-            if USE_MOCK_MODEL:
+        try:# ========== 액션 생성 ==========
+            if USE_MOCK_MODEL:# Mock 모드 또는 실제 모델 선택
                 print(f"[State] Mock 모델 사용 (테스트 모드)")
                 import mock_action_model as action_model_2
             else:
                 print(f"[State] 실제 모델 사용")
                 import action_model_2
 
-            # observations 구성 (UI 상태에서 추출)
             observations = None
             if "ui_state" in request.data:
                 ui_state = request.data["ui_state"]
@@ -237,7 +230,7 @@ async def save_state(request: StateData):
                 temp_action = {
                     "type": "trajectory",
                     "actions_file": "trajectory_student_check.json",
-                    "description": "학적부 열람 (최종 폴백)"
+                    "description": "(최종 폴백)"
                 }
                 state_data_to_save["generated_action"] = temp_action
                 print(f"[State] 하드코딩 trajectory 사용")
@@ -278,39 +271,26 @@ async def command(browser_running: str = "false", browser_count: int = 0):
             "has_task": False,
             "message": "대기 중인 테스크가 없습니다."
         }
-
     current_type = TASK_TYPE
-
-    # There is some task
     resp = {
         "has_task": True,
         "task_type": current_type,
     }
 
     if current_type == 1:
-        # login task
         resp["type"] = "login"
         resp["student_id"] = STUDENT_ID
         resp["password"] = PASSWORD
-        # 로그인 테스크 소비를 알림
         LOGIN_EVENT.set()
-        # 로그인은 여기서 바로 소모되므로 타입 리셋
         TASK_TYPE = 0
 
     elif current_type == 2:
         resp["type"] = "state"
-        resp["prompt_text"] = PROMPT_TEXT
-        # TASK_TYPE을 3으로 변경 (다음은 액션 명령)
+        resp["prompt_text"] = PROMPT_TEXT # TASK_TYPE을 3으로 변경 (다음은 액션 명령)
         TASK_TYPE = 3
 
     elif current_type == 3:
-        # action task
         resp["type"] = "action"
-
-        # One-Action-at-a-Time 모드: 다음 액션 미리 생성
-        if ACTION_SESSION_ACTIVE:
-            print(f"[Command] One-Action-at-a-Time 세션 활성화 - 다음 액션 생성 예약")
-            # 실제 액션 생성은 /action 호출 후 이루어지므로 여기서는 플래그만 설정
 
     elif current_type == 4:
         # shutdown task
@@ -412,34 +392,6 @@ def get_status():
             "status": "error",
             "message": f"state.json 읽기 중 오류: {str(e)}",
             "data": {"loginSuccess": True},
-        }
-
-
-    #state.json 파일이 존재하는 경우
-    try:
-        with open(state_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        #실행 완료 감지 → state.json 삭제 (이전 로직 유지)
-        if "action_success" in data:
-            try:
-                os.remove(state_path)
-                print("[Status] 실행 완료 감지 → state.json 삭제")
-            except Exception as e:
-                print(f"[Status] state.json 삭제 실패: {e}")
-
-            return {"status": "completed", "data": data}
-
-        # 실행 중 상태 유지
-        print("[Status] 실행 중: state.json 존재, action_success 미포함")
-        return {"status": "processing", "data": data}
-
-    except Exception as e:
-        print(f"[Status] 상태 파일 읽기 실패: {e}")
-        return {
-            "status": "error",
-            "message": f"state.json 읽기 중 오류 발생: {str(e)}",
-            "data": {"loginSuccess": False},
         }
 
 
