@@ -272,7 +272,7 @@ async def command(browser_running: str = "false", browser_count: int = 0):
 
 @app.get("/action")
 def get_action():
-    global TASK_TYPE, PROMPT_EVENT
+    global TASK_TYPE, PROMPT_EVENT, PROMPT_TEXT
     state_path = os.path.join(os.path.dirname(__file__), "state.json")
     if not os.path.exists(state_path):
         raise HTTPException(status_code=404, detail="state.json 파일이 존재하지 않습니다.")
@@ -298,6 +298,7 @@ def get_action():
     if is_last_action:
         print(f"[Action] 마지막 액션 전달 (status: FINISH), 작업 완료")
         TASK_TYPE = 0
+        PROMPT_TEXT = None  # ← 추가: 프롬프트 초기화
         PROMPT_EVENT.set()
     else:# 중간 액션 → 다시 state 요청
         print(f"[Action] 중간 액션 전달, TASK_TYPE=2로 변경 (다음 액션 생성 위해 state 요청)")
