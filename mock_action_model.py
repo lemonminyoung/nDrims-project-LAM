@@ -53,6 +53,11 @@ def get_next_action(observations=None, prompt_text=None, **kwargs):
     """
     global _current_step_index, _last_prompt
 
+    # ========== 디버그 로깅 추가 (2025-11-19) ==========
+    print(f"[Mock DEBUG] 함수 시작 - _current_step_index: {_current_step_index}, _last_prompt: {_last_prompt}")
+    print(f"[Mock DEBUG] 받은 prompt_text: {prompt_text}")
+    # ========== 디버그 끝 ==========
+
     # ========== 수정 시작 (2025-11-19) ==========
     # 문제: observations로 첫 요청 감지가 불완전함 (첫 요청도 UI 상태 포함 가능)
     # 해결: prompt_text 변경으로 새 세션 감지
@@ -60,10 +65,12 @@ def get_next_action(observations=None, prompt_text=None, **kwargs):
         print(f"[Mock] 새 프롬프트 감지: '{prompt_text}', step_index 초기화")
         _current_step_index = 0
         _last_prompt = prompt_text
+        print(f"[Mock DEBUG] 초기화 후 - _current_step_index: {_current_step_index}")
     # ========== 수정 끝 ==========
 
     # 모든 step 완료
     if _current_step_index >= len(_mock_steps):
+        print(f"[Mock DEBUG] 모든 step 완료 (_current_step_index={_current_step_index} >= {len(_mock_steps)})")
         return {
             "generated_action": {
                 "type": "trajectory",
@@ -77,6 +84,8 @@ def get_next_action(observations=None, prompt_text=None, **kwargs):
     # 현재 step 정보
     sid, tplan = _mock_steps[_current_step_index]
     is_last_action = (_current_step_index == len(_mock_steps) - 1)
+
+    print(f"[Mock DEBUG] 액션 생성 전 - _current_step_index: {_current_step_index}, is_last_action: {is_last_action}")
 
     action = _mock_actions[_current_step_index].copy()
 
@@ -100,6 +109,8 @@ def get_next_action(observations=None, prompt_text=None, **kwargs):
     }
 
     # step index 증가
+    print(f"[Mock DEBUG] 증가 전 - _current_step_index: {_current_step_index}")
     _current_step_index += 1
+    print(f"[Mock DEBUG] 증가 후 - _current_step_index: {_current_step_index}")
 
     return result
