@@ -17,12 +17,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 로그인 및 상태 전역 변수
 STUDENT_ID = None
 PASSWORD = None
 TASK_TYPE = 0
 PROMPT_TEXT = None
-PROMPT_EVENT = asyncio.Event()
+PROMPT_EVENT = asyncio.Event() # 다 비동기로 바꿨어 로그인 할 떄 충돌나서 .. 
 PROMPT_EVENT.set()
 LOGIN_EVENT = asyncio.Event()
 LOGIN_EVENT.set()
@@ -130,8 +129,15 @@ async def save_state(request: StateData):
     
     state_data_to_save = request.data.copy() # state.json에 저장할 데이터 준비
 
+    # 프롬프트 필드로 첫 요청인지 판단
+    is_first_request = "prompt" in request.data
+
     if PROMPT_TEXT:
-        print(f"[State] 프롬프트 감지: {PROMPT_TEXT}")
+        if is_first_request:
+            print(f"[State] 첫 요청 - 프롬프트: {PROMPT_TEXT}")
+        else:
+            print(f"[State] 후속 요청 - UI 상태 업데이트")
+
         print(f"[State] 현재 UI 상태 수신됨")
 
         has_ui_state = "ui_state" in request.data # UI 상태 확인
@@ -148,8 +154,9 @@ async def save_state(request: StateData):
                 print(f"[State] 실제 모델 사용")
                 import action_model_2
 
+            # 첫 요청이면 observations=None, 아니면 UI 상태 전달
             observations = None
-            if "ui_state" in request.data:
+            if not is_first_request and "ui_state" in request.data:
                 ui_state = request.data["ui_state"]
                 observations = {
                     "current_url": ui_state.get("url"),
@@ -157,11 +164,16 @@ async def save_state(request: StateData):
                 }
                 print(f"[State] Observations: {observations}")
 
+            # ========== 수정 시작 (2025-11-19) ==========
+            # 문제: mock_action_model이 새 프롬프트를 감지하지 못함
+            # 해결: prompt_text 파라미터 추가하여 전달
             # 다음 액션 생성
             action_result = action_model_2.get_next_action(
                 observations=observations,
+                prompt_text=PROMPT_TEXT,  # ← 수정: 프롬프트 전달 추가
                 max_new_tokens=256
             )
+            # ========== 수정 끝 ==========
 
             if "error" in action_result:
                 raise Exception(action_result["error"])
@@ -268,10 +280,19 @@ def get_action():
         data = json.load(f)
 
     generated_action = data.get("generated_action", {})
-    action = generated_action.get("action", {})
 
-    # 마지막 액션 여부: action 내부의 status 필드 확인
-    action_status = action.get("status")
+    # ========== 수정 시작 (2025-11-19) ==========
+    # 문제: action이 None일 수 있음 (폴백 시 actions_file만 있고 action 없음)
+    # 해결: 기본값 {}를 제거하고 None 체크 추가
+    action = generated_action.get("action")  # ← 수정: 기본값 {} 제거
+    # ========== 수정 끝 ==========
+
+    # ========== 수정 시작 (2025-11-19) ==========
+    # 문제: action이 None이면 .get("status") 호출 시 AttributeError 발생
+    # 해결: action이 None인지 먼저 체크
+    action_status = action.get("status") if action else None  # ← 수정: None 체크 추가
+    # ========== 수정 끝 ==========
+
     is_last_action = (action_status == "FINISH")
 
     if is_last_action:
@@ -405,4 +426,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
