@@ -123,7 +123,7 @@ async def prompt(request: PromptRequest):
     PROMPT_EVENT.clear()
 
     try:
-        await asyncio.wait_for(PROMPT_EVENT.wait(), timeout=30.0) # /command가 프롬프트를 가져갈 때까지 대기
+        await asyncio.wait_for(PROMPT_EVENT.wait(), timeout=60.0) # /command가 프롬프트를 가져갈 때까지 대기
     except asyncio.TimeoutError:# 타임아웃 시 상태 초기화
         PROMPT_TEXT = None
         PROMPT_EVENT.set()
@@ -458,5 +458,6 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
