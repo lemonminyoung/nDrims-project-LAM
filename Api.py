@@ -326,7 +326,7 @@ def update_verification(request: VerificationUpdate):
     global STATUS_SUCCESS, STATUS_MESSAGE, PROMPT_EVENT, TASK_TYPE
     STATUS_SUCCESS = request.success
     STATUS_MESSAGE = request.message
-     STATE_DATA = {
+    STATE_DATA = {
         "action_success": request.success,
         "action_description": "검증 완료",
         "message": request.message
@@ -458,4 +458,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
