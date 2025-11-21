@@ -113,8 +113,8 @@ class PromptRequest(BaseModel):
 
 @app.post("/prompt")
 async def prompt(request: PromptRequest):
-    global PROMPT_TEXT, PROMPT_EVENT, TASK_TYPE
-    
+    global PROMPT_TEXT, PROMPT_EVENT, TASK_TYPE, STATUS_SUCCESS, STATUS_MESSAGE
+
     if not PROMPT_EVENT.is_set(): # 이미 대기 중인 프롬프트가 있으면 거절
         raise HTTPException(status_code=409, detail="이미 대기 중인 프롬프트가 있습니다.")
 
@@ -123,16 +123,16 @@ async def prompt(request: PromptRequest):
     PROMPT_EVENT.clear()
 
     try:
-        await asyncio.wait_for(PROMPT_EVENT.wait(), timeout=60.0) # /command가 프롬프트를 가져갈 때까지 대기
+        await asyncio.wait_for(PROMPT_EVENT.wait(), timeout=60.0) # /verification에서 검증 완료될 때까지 대기
     except asyncio.TimeoutError:# 타임아웃 시 상태 초기화
         PROMPT_TEXT = None
         PROMPT_EVENT.set()
         raise HTTPException(status_code=504, detail="action이 완료되지 않아 타임아웃되었습니다.")
 
+    # 검증 결과 반환 (폴링 불필요)
     return {
-        "ok": True,
-        "prompt_text": request.text,
-        "message": "프롬프트가 command로 전달되었습니다."
+        "success": STATUS_SUCCESS,
+        "message": STATUS_MESSAGE,
     }
 
 
