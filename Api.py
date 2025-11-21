@@ -32,6 +32,21 @@ LAST_POLL_TIME = None
 BROWSER_RUNNING = False #얜 브라우저
 BROWSER_COUNT = 0
 
+# ============================
+# 추가: verification 데이터 저장용
+# ============================
+STATUS_SUCCESS = None
+STATUS_MESSAGE = None
+
+# ============================
+# 추가: VerificationUpdate 모델
+# ============================
+class VerificationUpdate(BaseModel):
+    success: bool
+    message: str
+# ============================
+
+
 class LoginRequest(BaseModel):
     student_id: str
     password: str
@@ -92,6 +107,7 @@ async def execution_web_init(request: dict):
     print("[INIT] 백엔드 상태 초기화 완료")
     return {"ok": True, "message": "백엔드 상태 초기화 완료"}
 
+
 class PromptRequest(BaseModel):
     text: str
 
@@ -118,6 +134,7 @@ async def prompt(request: PromptRequest):
         "prompt_text": request.text,
         "message": "프롬프트가 command로 전달되었습니다."
     }
+
 
 class StateData(BaseModel):
     data: dict
@@ -164,16 +181,11 @@ async def save_state(request: StateData):
                 }
                 print(f"[State] Observations: {observations}")
 
-            # ========== 수정 시작 (2025-11-19) ==========
-            # 문제: mock_action_model이 새 프롬프트를 감지하지 못함
-            # 해결: prompt_text 파라미터 추가하여 전달
-            # 다음 액션 생성
             action_result = action_model_2.get_next_action(
                 observations=observations,
-                prompt_text=PROMPT_TEXT,  # ← 수정: 프롬프트 전달 추가
+                prompt_text=PROMPT_TEXT,
                 max_new_tokens=256
             )
-            # ========== 수정 끝 ==========
 
             if "error" in action_result:
                 raise Exception(action_result["error"])
@@ -192,7 +204,6 @@ async def save_state(request: StateData):
             import traceback
             traceback.print_exc()
 
-            # 폴백: 하드코딩된 trajectory
             print(f"[State] 폴백: 하드코딩된 trajectory 사용")
             temp_action = {
                 "type": "trajectory",
@@ -222,15 +233,12 @@ async def command(browser_running: str = "false", browser_count: int = 0):
     global PROMPT_TEXT, PROMPT_EVENT, TASK_TYPE, LOGIN_EVENT, STUDENT_ID, PASSWORD, EXECUTION_WEB_CONNECTED, LAST_POLL_TIME, BROWSER_RUNNING, BROWSER_COUNT
     import datetime
 
-    # 실행 웹이 폴링하면 연결 상태 업데이트
     EXECUTION_WEB_CONNECTED = True
     LAST_POLL_TIME = datetime.datetime.now()
 
-    # 브라우저 상태 업데이트
     BROWSER_RUNNING = browser_running.lower() == "true"
     BROWSER_COUNT = browser_count
 
-    # If no pending task
     if TASK_TYPE == 0:
         return {
             "has_task": False,
@@ -251,17 +259,22 @@ async def command(browser_running: str = "false", browser_count: int = 0):
 
     elif current_type == 2:
         resp["type"] = "state"
-        resp["prompt_text"] = PROMPT_TEXT # TASK_TYPE을 3으로 변경 (다음은 액션 명령)
+        resp["prompt_text"] = PROMPT_TEXT
         TASK_TYPE = 3
 
     elif current_type == 3:
         resp["type"] = "action"
 
     elif current_type == 4:
-        # shutdown task
         resp["type"] = "shutdown"
-        # 종료 명령은 한 번만 전달하고 리셋
         TASK_TYPE = 0
+
+    # ============================
+    # ⭐ 추가: TASK_TYPE == 5 → verification 단계
+    # ============================
+    elif current_type == 5:
+        resp["type"] = "verification"
+    # ============================
 
     elif TASK_TYPE == 99:
         TASK_TYPE = 0
@@ -269,6 +282,7 @@ async def command(browser_running: str = "false", browser_count: int = 0):
         return {"has_task": True, "type": "shutdown"}
 
     return resp
+
 
 @app.get("/action")
 def get_action():
@@ -280,44 +294,55 @@ def get_action():
         data = json.load(f)
 
     generated_action = data.get("generated_action", {})
-
-    # ========== 수정 시작 (2025-11-19) ==========
-    # 문제: action이 None일 수 있음 (폴백 시 actions_file만 있고 action 없음)
-    # 해결: 기본값 {}를 제거하고 None 체크 추가
-    action = generated_action.get("action")  # ← 수정: 기본값 {} 제거
-    # ========== 수정 끝 ==========
-
-    # ========== 수정 시작 (2025-11-19) ==========
-    # 문제: action이 None이면 .get("status") 호출 시 AttributeError 발생
-    # 해결: action이 None인지 먼저 체크
-    action_status = action.get("status") if action else None  # ← 수정: None 체크 추가
-    # ========== 수정 끝 ==========
+    action = generated_action.get("action")
+    action_status = action.get("status") if action else None
 
     is_last_action = (action_status == "FINISH")
 
     if is_last_action:
         print(f"[Action] 마지막 액션 전달 (status: FINISH), 작업 완료")
-        TASK_TYPE = 0
-        PROMPT_TEXT = None  # ← 추가: 프롬프트 초기화
+
+        # =======================================
+        # ⭐ 기존: TASK_TYPE = 0
+        # ⭐ 변경: verification 단계로 넘겨야 함
+        # =======================================
+        TASK_TYPE = 5     # ★ 여기 변경됨 ★
+        # =======================================
+
+        PROMPT_TEXT = None
         PROMPT_EVENT.set()
-    else:# 중간 액션 → 다시 state 요청
+    else:
         print(f"[Action] 중간 액션 전달, TASK_TYPE=2로 변경 (다음 액션 생성 위해 state 요청)")
-        TASK_TYPE = 2  # 다음 폴링에서 "state" 반환하여 실행 웹이 UI 상태 전송
+        TASK_TYPE = 2
 
     return JSONResponse(content=data)
 
+
+# ===========================================
+# ⭐ 추가된 엔드포인트: /verification
+# ===========================================
+@app.post("/verification")
+def update_verification(request: VerificationUpdate):
+    global STATUS_SUCCESS, STATUS_MESSAGE, PROMPT_EVENT, TASK_TYPE
+    STATUS_SUCCESS = request.success
+    STATUS_MESSAGE = request.message
+    PROMPT_EVENT.set()
+    TASK_TYPE = 0
+    return {
+        "ok": True,
+        "stored_success": STATUS_SUCCESS,
+        "stored_message": STATUS_MESSAGE
+    }
+# ===========================================
+
+
 @app.get("/status")
 def get_status():
-    """
-    프론트엔드(App.jsx)에서 주기적으로 호출하는 상태 확인 엔드포인트.
-    - login_state.json: 로그인 세션 유지 여부 판단
-    - state.json: 현재 작업 상태 판단
-    """
     base_dir = os.path.dirname(__file__)
     state_path = os.path.join(base_dir, "state.json")
     login_path = os.path.join(base_dir, "login_state.json")
 
-    if not os.path.exists(login_path):  #로그인 세션 없음 → 로그인 해제 처리
+    if not os.path.exists(login_path):
         print("[Status] 로그인 세션 없음 → 로그인 화면으로 복귀")
         return {
             "status": "waiting",
@@ -325,7 +350,7 @@ def get_status():
             "data": {"loginSuccess": False},
         }
     
-    if not os.path.exists(state_path): #로그인 세션 존재하지만 state.json 없음 → idle (로그인 유지)
+    if not os.path.exists(state_path):
         print("[Status] 로그인됨 + 작업 없음 → idle 상태 유지")
         with open(login_path, "r", encoding="utf-8") as f:
             login_info = json.load(f)
@@ -338,7 +363,7 @@ def get_status():
             },
         }
 
-    try:  # state.json 존재 → 작업 상태 반환
+    try:
         with open(state_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -361,19 +386,19 @@ def get_status():
             "data": {"loginSuccess": True},
         }
 
+
 @app.post("/execution_web/shutdown")
 async def execution_web_shutdown(request: dict):
-    """실행 웹 종료 신호 수신"""
     global EXECUTION_WEB_CONNECTED, BROWSER_RUNNING, BROWSER_COUNT, TASK_TYPE
     EXECUTION_WEB_CONNECTED = False
     BROWSER_RUNNING = False
     BROWSER_COUNT = 0
-    TASK_TYPE = 4  # 종료 명령 타입
+    TASK_TYPE = 4
     print("[백엔드] 실행 웹 종료 신호 수신")
     return {"ok": True, "message": "실행 웹 종료 신호 수신됨"}
 
 
-@app.post("/logout") #세션 브라우저랑 상태 초기화 하는 거 
+@app.post("/logout")
 async def logout():
     global STUDENT_ID, PASSWORD, PROMPT_TEXT, LOGIN_EVENT, PROMPT_EVENT, TASK_TYPE
 
@@ -383,9 +408,9 @@ async def logout():
     LOGIN_EVENT.set()
     PROMPT_EVENT.set()
 
-    TASK_TYPE = 99  # 브라우저 종료하는 거 
+    TASK_TYPE = 99
     
-    base_dir = os.path.dirname(__file__) # 세션 및 상태 파일 삭제
+    base_dir = os.path.dirname(__file__)
     for fname in ["login_state.json", "state.json"]:
         path = os.path.join(base_dir, fname)
         if os.path.exists(path):
@@ -395,24 +420,25 @@ async def logout():
     print("[백엔드] 로그아웃 요청 - 상태 초기화 완료")
     return {"ok": True, "message": "로그아웃 처리됨"}
 
-@app.post("/browser/close") #브라우저 닫기 명령인데, 이거 프롬프트웹 로그아웃 하면 같이 꺼지게 만들려고 한거니까 넣어쥬세욥 ... 
+
+@app.post("/browser/close")
 async def close_browser():
-    """브라우저 닫기 명령"""
     global TASK_TYPE
-    TASK_TYPE = 4  # 브라우저 닫기 명령
+    TASK_TYPE = 4
     print("[백엔드] 브라우저 닫기 명령 설정")
     return {"ok": True, "message": "브라우저 닫기 명령 전송"}
 
+
 @app.get("/execution_web/status")
-async def execution_web_status(): #실행웹 연결 상태 확인 
+async def execution_web_status():
     global EXECUTION_WEB_CONNECTED, LAST_POLL_TIME, BROWSER_RUNNING, BROWSER_COUNT
     import datetime
 
-    if LAST_POLL_TIME: # 마지막 폴링으로부터 8초 이상 경과하면 연결 끊김으로 간주
+    if LAST_POLL_TIME:
         elapsed = (datetime.datetime.now() - LAST_POLL_TIME).total_seconds()
         if elapsed > 8:
             EXECUTION_WEB_CONNECTED = False
-            BROWSER_RUNNING = False # 연결이 끊기면 브라우저 상태도 초기화
+            BROWSER_RUNNING = False
             BROWSER_COUNT = 0
 
     return {
